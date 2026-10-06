@@ -77,19 +77,36 @@ def construir_ranking(df, rc, qc, pc, dc, ordenar_por="unidades"):
         out[marca] = [{"ref": r.ref, "uds": int(r.uds), "euros": round(float(r.euros), 2)} for r in g.itertuples()]
     return out
 
-def fotos_desde_zip(zip_bytes, tmpdir):
-    """Extrae el zip y devuelve {REF: ruta_foto}. Ignora ocultos del Mac."""
+def _es_imagen(nombre):
+    return nombre.lower().endswith((".jpg", ".jpeg", ".png"))
+
+def recoger_fotos(archivos, tmpdir):
+    """Acepta una lista de archivos subidos: imágenes sueltas y/o zips (mezcla).
+    Devuelve {REF: ruta_foto}. Ignora ocultos del Mac."""
     m = {}
-    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as z:
-        for n in z.namelist():
-            base = os.path.basename(n)
-            if not base or base.startswith("._") or "__MACOSX" in n:
+    for f in archivos:
+        nombre = f.name
+        datos = f.getvalue()
+        if nombre.lower().endswith(".zip"):
+            try:
+                with zipfile.ZipFile(io.BytesIO(datos)) as z:
+                    for n in z.namelist():
+                        base = os.path.basename(n)
+                        if not base or base.startswith("._") or "__MACOSX" in n or not _es_imagen(base):
+                            continue
+                        dst = os.path.join(tmpdir, base)
+                        with z.open(n) as src, open(dst, "wb") as out:
+                            out.write(src.read())
+                        m[os.path.splitext(base)[0].upper()] = dst
+            except zipfile.BadZipFile:
                 continue
-            if not base.lower().endswith((".jpg", ".jpeg", ".png")):
+        elif _es_imagen(nombre):
+            base = os.path.basename(nombre)
+            if base.startswith("._"):
                 continue
             dst = os.path.join(tmpdir, base)
-            with z.open(n) as src, open(dst, "wb") as f:
-                f.write(src.read())
+            with open(dst, "wb") as out:
+                out.write(datos)
             m[os.path.splitext(base)[0].upper()] = dst
     return m
 
@@ -223,7 +240,8 @@ if not ("dashboard_password" in st.secrets and not check_password()):
     with c1:
         excel_file = st.file_uploader("1 · Excel con las líneas de venta", type=["xlsx", "xlsm"])
     with c2:
-        zip_file = st.file_uploader("2 · Zip con las fotos (nombre = referencia)", type=["zip"])
+        fotos_files = st.file_uploader("2 · Fotos (sueltas o en ZIP · nombre = referencia)",
+                                       type=["zip", "jpg", "jpeg", "png"], accept_multiple_files=True)
 
     o1, o2 = st.columns(2)
     with o1:
@@ -232,7 +250,7 @@ if not ("dashboard_password" in st.secrets and not check_password()):
         formatos = st.multiselect("Formato de salida", ["PDF", "Excel"], default=["PDF", "Excel"])
     titulo = st.text_input("Título del documento", value="Ranking de ventas")
 
-    if excel_file and zip_file and formatos:
+    if excel_file and fotos_files and formatos:
         if st.button("Generar ranking", type="primary"):
             try:
                 df, rc, qc, pc, dc, hoja = leer_excel(excel_file)
@@ -242,7 +260,7 @@ if not ("dashboard_password" in st.secrets and not check_password()):
             con_euros = pc is not None
 
             with tempfile.TemporaryDirectory() as tmp:
-                fotos = fotos_desde_zip(zip_file.getvalue(), tmp)
+                fotos = recoger_fotos(fotos_files, tmp)
                 # resumen de cobertura
                 tot_ref = sum(len(v) for v in ranking.values())
                 con_foto = sum(1 for v in ranking.values() for it in v if it["ref"] in fotos)
@@ -262,4 +280,4 @@ if not ("dashboard_password" in st.secrets and not check_password()):
                     st.download_button("⬇ Descargar Excel", xls, file_name="ranking.xlsx",
                                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
     else:
-        st.info("Sube el Excel y el zip de fotos, elige el formato y pulsa Generar.")
+        st.info("Sube el Excel y las fotos (sueltas o en ZIP), elige el formato y pulsa Generar.")
